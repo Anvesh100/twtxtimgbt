@@ -1,66 +1,77 @@
-import os
-import io
-import requests
-from PIL import Image, ImageDraw, ImageFont
 import tweepy
-from airtable import Airtable
+from PIL import Image, ImageDraw, ImageFont
+import requests
 import time
+from io import BytesIO
 
-# Replace the following lines with your own API keys and Airtable API key
-API_KEY = 'your_api_key'
-API_SECRET_KEY = 'your_api_secret_key'
-ACCESS_TOKEN = 'your_access_token'
-ACCESS_TOKEN_SECRET = 'your_access_token_secret'
-AIRTABLE_API_KEY = 'your_airtable_api_key'
+# Twitter API credentials
+consumer_key = "YOUR_CONSUMER_KEY"
+consumer_secret = "YOUR_CONSUMER_SECRET"
+access_token = "YOUR_ACCESS_TOKEN"
+access_token_secret = "YOUR_ACCESS_TOKEN_SECRET"
 
-auth = tweepy.OAuth1UserHandler(API_KEY, API_SECRET_KEY, ACCESS_TOKEN, ACCESS_TOKEN_SECRET)
+# Authenticate with Twitter API
+auth = tweepy.OAuthHandler(consumer_key, consumer_secret)
+auth.set_access_token(access_token, access_token_secret)
 api = tweepy.API(auth)
-airtable = Airtable("Your Airtable Base", "Your Table Name", AIRTABLE_API_KEY)
 
-class TwitterBot:
-    def reply_with_image_and_text(self, status):
-        try:
-            text = status.text
-            username = status.user.screen_name
-            profile_image_url = status.user.profile_image_url
+# Function to create circular profile image
+def create_circular_profile_image(profile_pic_url):
+    response = requests.get(profile_pic_url)
+    profile_pic = Image.open(BytesIO(response.content))
+    diameter = min(profile_pic.size)
+    mask = Image.new("L", profile_pic.size, 0)
+    draw = ImageDraw.Draw(mask)
+    draw.ellipse((0, 0, diameter, diameter), fill=255)
+    masked_profile_pic = ImageOps.fit(profile_pic, mask.size)
+    masked_profile_pic.putalpha(mask)
+    return masked_profile_pic
 
-            # Add text and username to Airtable
-            airtable.insert({'Name': username, 'Text': text}, typecast=True)
+# Function to create image with circular profile picture, name, username, and tweet text
+def create_image_with_profile_pic(profile_pic_url, name, username, tweet_text):
+    profile_pic = create_circular_profile_image(profile_pic_url)
+    img = Image.new('RGB', (500, 600), color=(255, 255, 255))
+    img.paste(profile_pic, (10, 10))
+    draw = ImageDraw.Draw(img)
+    font = ImageFont.truetype("arial.ttf", 20)
+    draw.text((150, 10), f"Name: {name}", font=font, fill=(0, 0, 0))
+    draw.text((150, 40), f"Username: @{username}", font=font, fill=(0, 0, 0))
+    draw.text((10, 150), "Tweet Text:", font=font, fill=(0, 0, 0))
+    draw.text((10, 180), tweet_text, font=font, fill=(0, 0, 0))
+    return img
 
-            # Convert text into an image
-            img = Image.new('RGB', (300, 40), color=(255, 255, 255))
-            draw = ImageDraw.Draw(img)
-            draw.text((10, 10), text, font=ImageFont.truetype('arial.ttf', 16), fill=(0, 0, 0))
+# Function to handle mentions
+def handle_mentions():
+    try:
+        mentions = api.mentions_timeline()
+        for mention in mentions:
+            tweet_id = mention.id
+            username = mention.user.screen_name
+            name = mention.user.name
+            tweet_text = mention.text.replace(f"@{username}", "").strip()
+            profile_pic_url = mention.user.profile_image_url
 
-            # Load user's profile picture
-            user_profile_image = io.BytesIO(requests.get(profile_image_url).content)
-            user_profile_image = Image.open(user_profile_image)
-            user_profile_image.thumbnail((80, 80), Image.ANTIALIAS)
+            # Create image with profile pic, name, username, and tweet text
+            tweet_image = create_image_with_profile_pic(profile_pic_url, name, username, tweet_text)
 
-            # Merge user profile picture and text
-            img = Image.alpha_composite(img, profile_image.convert('RGBA'))
+            # Save combined image
+            tweet_image.save(f"{username}_tweet_image.jpg")
 
-            # Save the image
-            response = io.BytesIO()
-            img.save(response, format='JPEG')
-            response.seek(0)
+            # Reply to the mention with the image
+            api.update_with_media(f"{username}_tweet_image.jpg", status=f"@{username} Here's your tweet in image form!")
 
-            # Upload the image to Twitter
-            media = api.media_upload(filename='image.jpg', file=response)
+            # Delete the mention tweet
+            api.destroy_status(tweet_id)
 
-            # Reply        # Reply to the tweet
-            api.update_status(status=f'Here is your text as an image:\n\n{text}', in_reply_to_status_id=status.id, media_ids=[media.media_id])
+            # Add a delay between API calls to avoid rate limits
+            time.sleep(15)  # Delay for 15 seconds
 
-        except Exception as e:
-            print(f'Error: {str(e)}')
+    except tweepy.TweepError as e:
+        print(f"An error occurred: {str(e)}")
 
-if __name__ == '__main__':
-    bot = TwitterBot()
-    while True:
-        try:
-            mentions = api.mentions_timeline()
-            for mention in mentions:
-                bot.reply_with_image_and_text(mention)
-            time.sleep(10)
-        except Exception as e:
-            print(f'Error: {str(e)}')
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+
+# Run the bot
+while True:
+    handle_mentions()
